@@ -1,29 +1,148 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_ADS1015.h>
+#include <WiFi.h>
+#include <MQTTClient.h> // MQTT Client from Joël Gaehwiler https://github.com/256dpi/arduino-mqtt   keepalive manually to 15s
+#include <Measurement.h>
+
+const char* WiFi_SSID = "YourWiFiSSID";
+const char* WiFi_PW = "YourWiFiPassword";
+const char* mqtt_broker = "YourMQTTBrokerIP";
+const char* mqtt_user = "YourMQTTBrokerUsername";
+const char* mqtt_pw = "YourMQTTBrokerPassword";
+const char* input_topic = "YourTopic";
+
+unsigned long readInterval = 2000;
+unsigned long uploadInterval = 10000;
+
+unsigned long lastReadMillis;
+unsigned long lastUploadMillis;
+
+unsigned int readExecTime = 11; // millis necessary to read sensor
+unsigned int uploadExecTime = 2; // millis necessary to publish message to broker
+
+String clientId;
+
+unsigned long waitCount;
+uint8_t conn_stat;
+// Connection status for WiFi and MQTT:
+//
+// status |   WiFi   |    MQTT
+// -------+----------+------------
+//      0 |   down   |    down
+//      1 | starting |    down
+//      2 |    up    |    down
+//      3 |    up    |  starting
+//      4 |    up    | finalising
+//      5 |    up    |     up
+
+WiFiClient espClient;       // TCP client object, uses SSL/TLS
+MQTTClient mqttClient(512); // MQTT client object with a buffer size of 512 (depends on your message size)
 
 Adafruit_ADS1115 ads(0x48);
-float voltage = 0.0;
+Measurement irradiance;
 
-void setup(void)
+void setup()
 {
     Serial.begin(115200);
+    WiFi.mode(WIFI_STA); // config WiFi as client
     ads.begin();
 }
 
-void loop(void)
+float readVoltage(uint adsPin)
 {
     int16_t adc0;
+    adc0 = ads.readADC_SingleEnded(adsPin);
+    return adc0 * 0.1875; // millivolts, reference_voltage/possible_values: 6.144/2^(16-1)=0.1875
+}
 
-    adc0 = ads.readADC_SingleEnded(0);
-    voltage = adc0 * 0.1875; // millivolts
-
-    Serial.print("AIN0: ");
-    Serial.print(adc0);
-    Serial.print("\tVoltage: ");
-    Serial.print(voltage, 7);
-    Serial.print(" mV");
+void printPins()
+{
     Serial.println();
+    Serial.println("======================");
+    Serial.println("Hardware SPI GPIO pins");
+    Serial.print("MOSI: \t");
+    Serial.println(MOSI);
+    Serial.print("MISO: \t");
+    Serial.println(MISO);
+    Serial.print("SCK: \t");
+    Serial.println(SCK);
+    Serial.print("SS: \t");
+    Serial.println(SS);
+    Serial.println("======================");
+    Serial.println("Default I2C GPIO pins");
+    Serial.print("SDA: \t");
+    Serial.println(SDA);
+    Serial.print("SCL: \t");
+    Serial.println(SCL);
+    Serial.println();
+}
 
-    delay(1000);
+boolean connected()
+{
+    if ((WiFi.status() != WL_CONNECTED) && (conn_stat != 1))
+    {
+        conn_stat = 0;
+    }
+    if ((WiFi.status() == WL_CONNECTED) && !mqttClient.connected() && (conn_stat != 3))
+    {
+        conn_stat = 2;
+    }
+    if ((WiFi.status() == WL_CONNECTED) && mqttClient.connected() && (conn_stat != 5))
+    {
+        conn_stat = 4;
+    }
+    switch (conn_stat)
+    {
+    case 0: // MQTT and WiFi down: start WiFi
+        Serial.println("MQTT and WiFi down: start WiFi");
+        WiFi.begin(WiFi_SSID, WiFi_PW);
+        conn_stat = 1;
+        break;
+    case 1: // WiFi starting, do nothing here
+        Serial.println("WiFi starting, wait : " + String(waitCount));
+        waitCount++;
+        break;
+    case 2: // WiFi up, MQTT down: start MQTT
+        Serial.println("WiFi up, MQTT down: start MQTT");
+        mqttClient.begin(mqtt_broker, 1883, espClient);          //   config MQTT Server, use port 8883 for secure connection
+        clientId = "ESP32Client-" + String(random(0xffff), HEX); // Create a random client ID
+        mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_pw);
+        conn_stat = 3;
+        waitCount = 0;
+        break;
+    case 3: // WiFi up, MQTT starting, do nothing here
+        Serial.println("WiFi up, MQTT starting, wait : " + String(waitCount));
+        mqttClient.connect(clientId.c_str(), mqtt_user, mqtt_pw);
+        waitCount++;
+        break;
+    case 4: // WiFi up, MQTT up: finish MQTT configuration
+        Serial.println("WiFi up, MQTT up: finish MQTT configuration");
+        mqttClient.publish(input_topic, "{\"Status\":\"up and running!\"}");
+        conn_stat = 5;
+        break;
+    }
+    return conn_stat == 5;
+}
+
+void loop()
+{
+    if (connected())
+    {
+        if (millis() - lastReadMillis >= (readInterval + readExecTime))
+        {
+            irradiance.update(readVoltage(0));
+            lastReadMillis = millis();
+        }
+        if (millis() - lastUploadMillis >= (uploadInterval + uploadExecTime))
+        {
+            String json = "{\"irradiance\":\"" + String(irradiance.average()) + "\" }";
+            char *payload = &json[0]; // converts String to char*
+            mqttClient.publish(input_topic, payload);
+            mqttClient.loop(); //      give control to MQTT to send message to broker
+
+            lastUploadMillis = millis();
+        }
+        mqttClient.loop();
+    }
 }
