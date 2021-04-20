@@ -19,7 +19,6 @@ unsigned long lastReadMillis;
 unsigned long lastUploadMillis;
 
 unsigned int readExecTime = 11; // millis necessary to read sensor
-unsigned int uploadExecTime = 2; // millis necessary to publish message to broker
 
 String clientId;
 
@@ -134,13 +133,12 @@ void loop()
             irradiance.update(readVoltage(0));
             lastReadMillis = millis();
         }
-        if (millis() - lastUploadMillis >= (uploadInterval + uploadExecTime))
+        if (millis() - lastUploadMillis >= uploadInterval)
         {
             String json = "{\"irradiance\":\"" + String(irradiance.average()) + "\" }";
             char *payload = &json[0]; // converts String to char*
             mqttClient.publish(input_topic, payload);
             mqttClient.loop(); //      give control to MQTT to send message to broker
-
             lastUploadMillis = millis();
         }
         mqttClient.loop();
