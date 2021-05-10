@@ -12,9 +12,10 @@ const char* mqtt_user = "YourMQTTBrokerUsername";
 const char* mqtt_pw = "YourMQTTBrokerPassword";
 const char* input_topic = "YourTopic";
 
-unsigned long readInterval = 2000;
-unsigned long uploadInterval = 10000;
+unsigned long readInterval = 3000;
+unsigned long uploadInterval = 60000;
 
+unsigned long currentMillis;
 unsigned long lastReadMillis;
 unsigned long lastUploadMillis;
 
@@ -128,18 +129,20 @@ void loop()
 {
     if (connected())
     {
-        if (millis() - lastReadMillis >= (readInterval + readExecTime))
+        currentMillis = millis();
+        if (currentMillis - lastReadMillis >= readInterval)
         {
+            lastReadMillis = currentMillis;
             irradiance.update(readVoltage(0));
-            lastReadMillis = millis();
         }
-        if (millis() - lastUploadMillis >= uploadInterval)
+        currentMillis = millis();
+        if (currentMillis - lastUploadMillis >= uploadInterval)
         {
+            lastUploadMillis = currentMillis;
             String json = "{\"irradiance\":\"" + String(irradiance.average()) + "\" }";
             char *payload = &json[0]; // converts String to char*
             mqttClient.publish(input_topic, payload);
             mqttClient.loop(); //      give control to MQTT to send message to broker
-            lastUploadMillis = millis();
         }
         mqttClient.loop();
     }
